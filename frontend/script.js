@@ -1340,3 +1340,271 @@ function descargarInformePDF() {
   const inicioStr = lunes.toISOString().split('T')[0];
   window.open(`${API_URL}/visitas/informe-semanal/pdf?inicio=${inicioStr}`, '_blank');
 }
+// ══════════════════════════════════════════
+//  AUTOCOMPLETAR POR DNI / DOCUMENTO
+// ══════════════════════════════════════════
+
+function setValor(id, valor) {
+  const el = document.getElementById(id);
+  if (el) el.value = valor == null ? '' : valor;
+}
+
+function limpiarErrorCampo(id, hintId) {
+  const el = document.getElementById(id);
+  const hint = document.getElementById(hintId);
+  if (el) el.classList.remove('field-required-error');
+  if (hint) hint.classList.remove('visible');
+}
+
+// Cartelito debajo de un campo (se crea solo la primera vez)
+function mostrarAviso(inputId, texto, color) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const avisoId = 'aviso-' + inputId;
+  let aviso = document.getElementById(avisoId);
+  if (!aviso) {
+    aviso = document.createElement('div');
+    aviso.id = avisoId;
+    aviso.style.cssText = 'font-size:12px; margin-top:4px;';
+    input.insertAdjacentElement('afterend', aviso);
+  }
+  aviso.textContent = texto;
+  aviso.style.color = color || '#16a34a';
+  aviso.style.display = texto ? 'block' : 'none';
+}
+
+// ── VISITANTES (por DNI) ──────────────────
+
+const CAMPOS_VISITANTE = [
+  ['visitante-nombre', 'hint-visitante-nombre'],
+  ['visitante-apellido', 'hint-visitante-apellido'],
+  ['visitante-domicilio', 'hint-visitante-domicilio'],
+  ['visita-dni', 'hint-visita-dni'],
+];
+
+let visitanteAutocompletado = false;
+let fotoAutocompletada = false;
+let timerDni = null;
+
+function limpiarFormularioVisita() {
+  [
+    'visita-paciente', 'visitante-nombre', 'visitante-apellido',
+    'visitante-telefono', 'visitante-domicilio', 'visita-dni',
+    'visita-parentesco', 'visita-observaciones'
+  ].forEach(id => setValor(id, ''));
+  CAMPOS_VISITANTE.forEach(([id, hint]) => limpiarErrorCampo(id, hint));
+  const hintParentesco = document.getElementById('hint-visita-parentesco');
+  if (hintParentesco) hintParentesco.style.display = 'none';
+  mostrarAviso('visita-dni', '');
+  visitanteAutocompletado = false;
+  fotoAutocompletada = false;
+}
+
+// Si cambian el DNI, se borran los datos que se habían completado solos
+function borrarAutocompletadoVisitante() {
+  if (!visitanteAutocompletado) return;
+  [
+    'visitante-nombre', 'visitante-apellido', 'visitante-telefono',
+    'visitante-domicilio', 'visita-parentesco'
+  ].forEach(id => setValor(id, ''));
+  if (fotoAutocompletada) {
+    limpiarFoto();
+    fotoAutocompletada = false;
+  }
+  visitanteAutocompletado = false;
+}
+
+async function buscarVisitantePorDni() {
+  const input = document.getElementById('visita-dni');
+  if (!input) return;
+  const dni = input.value.trim();
+
+  if (dni.length < 7) {
+    mostrarAviso('visita-dni', '');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/visitas/visitante/${encodeURIComponent(dni)}`);
+    if (!res.ok) return;
+    const v = await res.json();
+
+    // Si mientras tanto cambiaron el DNI, se ignora esta respuesta
+    if (input.value.trim() !== dni) return;
+
+    if (!v) {
+      mostrarAviso('visita-dni', 'Visitante nuevo: completá sus datos, quedarán guardados para la próxima.', '#6b7280');
+      return;
+    }
+
+    setValor('visitante-nombre', v.nombreVisitante);
+    setValor('visitante-apellido', v.apellidoVisitante);
+    setValor('visitante-telefono', v.telefono);
+    setValor('visitante-domicilio', v.domicilio);
+
+    const selParentesco = document.getElementById('visita-parentesco');
+    if (selParentesco && v.parentesco &&
+        [...selParentesco.options].some(o => o.value === v.parentesco)) {
+      selParentesco.value = v.parentesco;
+    }
+
+    const fotoInput = document.getElementById('foto-visita-input');
+    if (v.foto && fotoInput && !fotoInput.value) {
+      fotoInput.value = v.foto;
+      const preview = document.getElementById('camara-preview');
+      if (preview) {
+        preview.innerHTML = `<img src="${v.foto}" alt="Foto del visitante" style="max-width:100%; height:auto; border-radius:6px;">`;
+      }
+      const btnQuitar = document.getElementById('btn-retomar-foto');
+      if (btnQuitar) btnQuitar.style.display = 'inline-flex';
+      fotoAutocompletada = true;
+    }
+
+    CAMPOS_VISITANTE.forEach(([id, hint]) => limpiarErrorCampo(id, hint));
+    const hintParentesco = document.getElementById('hint-visita-parentesco');
+    if (hintParentesco) hintParentesco.style.display = 'none';
+
+    visitanteAutocompletado = true;
+    mostrarAviso('visita-dni', '✔ Visitante ya registrado: se completaron sus datos.');
+  } catch (e) {
+    console.warn('No se pudo buscar el visitante:', e.message);
+  }
+}
+
+// Cada vez que se abre "Nueva visita" el formulario arranca limpio
+const _abrirNuevaVisitaBase = abrirModalNuevaVisita;
+abrirModalNuevaVisita = function () {
+  _abrirNuevaVisitaBase();
+  limpiarFormularioVisita();
+};
+
+// ── PACIENTES (por documento) ─────────────
+
+const CAMPOS_PACIENTE = {
+  nombre: 'paciente-nombre',
+  documento: 'paciente-documento',
+  fechaNacimiento: 'paciente-fecha-nacimiento',
+  genero: 'paciente-genero',
+  sangre: 'paciente-sangre',
+  telefono: 'paciente-telefono',
+  email: 'paciente-email',
+  direccion: 'paciente-direccion',
+  habitacion: 'paciente-habitacion',
+  cama: 'paciente-cama',
+  alergias: 'paciente-alergias',
+};
+
+let pacienteExistenteId = null;
+
+function borrarDatosPacienteExceptoDocumento() {
+  Object.entries(CAMPOS_PACIENTE).forEach(([campo, id]) => {
+    if (campo !== 'documento') setValor(id, '');
+  });
+}
+
+function limpiarFormularioPaciente() {
+  Object.values(CAMPOS_PACIENTE).forEach(id => setValor(id, ''));
+  pacienteExistenteId = null;
+  [
+    ['paciente-nombre', 'hint-paciente-nombre'],
+    ['paciente-documento', 'hint-paciente-documento'],
+    ['paciente-direccion', 'hint-paciente-direccion'],
+  ].forEach(([id, hint]) => limpiarErrorCampo(id, hint));
+  mostrarAviso('paciente-documento', '');
+}
+
+function buscarPacientePorDocumento() {
+  const input = document.getElementById('paciente-documento');
+  if (!input) return;
+  const doc = input.value.trim();
+
+  if (!doc) {
+    mostrarAviso('paciente-documento', '');
+    return;
+  }
+
+  const p = pacientes.find(x => String(x.documento).trim() === doc);
+  if (!p) {
+    mostrarAviso('paciente-documento', 'Paciente nuevo.', '#6b7280');
+    return;
+  }
+
+  pacienteExistenteId = p.id;
+  Object.entries(CAMPOS_PACIENTE).forEach(([campo, id]) => {
+    if (campo !== 'documento') setValor(id, p[campo]);
+  });
+  [
+    ['paciente-nombre', 'hint-paciente-nombre'],
+    ['paciente-direccion', 'hint-paciente-direccion'],
+  ].forEach(([id, hint]) => limpiarErrorCampo(id, hint));
+
+  mostrarAviso(
+    'paciente-documento',
+    '✔ Paciente ya registrado: se cargaron sus datos. Al guardar se actualiza su ficha (por ejemplo, habitación y cama).'
+  );
+}
+
+// Cada vez que se abre "Nuevo paciente" el formulario arranca limpio
+const _openModalBase = openModal;
+openModal = function (id) {
+  if (id === 'modal-nuevo-paciente') limpiarFormularioPaciente();
+  _openModalBase(id);
+};
+
+// Si el paciente ya existe, guardar = actualizar su ficha (en vez de dar error por documento repetido)
+const _gpNuevoBase = guardarPaciente;
+guardarPaciente = async function () {
+  if (!pacienteExistenteId) return _gpNuevoBase();
+
+  const ok = validarCamposRequeridos([
+    { id: 'paciente-nombre',    hintId: 'hint-paciente-nombre' },
+    { id: 'paciente-documento', hintId: 'hint-paciente-documento' },
+    { id: 'paciente-direccion', hintId: 'hint-paciente-direccion' },
+  ]);
+  if (!ok) return;
+
+  const existente = pacientes.find(p => p.id === pacienteExistenteId) || {};
+  const datos = {};
+  Object.entries(CAMPOS_PACIENTE).forEach(([campo, id]) => {
+    datos[campo] = document.getElementById(id).value;
+  });
+  datos.nombre = datos.nombre.trim();
+  datos.notas = existente.notas || '';
+
+  try {
+    const res = await fetch(`${API_URL}/pacientes/${pacienteExistenteId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datos)
+    });
+    if (!res.ok) { const e = await res.json(); alert('Error: ' + e.error); return; }
+    closeModal('modal-nuevo-paciente');
+    await recargarTodo();
+  } catch (e) {
+    alert('No se pudo conectar al servidor.');
+  }
+};
+
+// ── Eventos ───────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  const dniVisita = document.getElementById('visita-dni');
+  if (dniVisita) {
+    dniVisita.addEventListener('input', () => {
+      borrarAutocompletadoVisitante();
+      clearTimeout(timerDni);
+      timerDni = setTimeout(buscarVisitantePorDni, 400);
+    });
+  }
+
+  const docPaciente = document.getElementById('paciente-documento');
+  if (docPaciente) {
+    docPaciente.addEventListener('input', () => {
+      if (pacienteExistenteId) {
+        borrarDatosPacienteExceptoDocumento();
+        pacienteExistenteId = null;
+      }
+      buscarPacientePorDocumento();
+    });
+  }
+});
